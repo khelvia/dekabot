@@ -1,7 +1,6 @@
 import os
 import threading
 from flask import Flask
-import google.generativeai as genai
 import pandas as pd
 import yfinance as yf
 from docx import Document
@@ -13,6 +12,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from google import genai
 
 # ==============================
 # ENV VARIABLES
@@ -24,8 +24,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
     raise ValueError("Missing TELEGRAM_TOKEN or GEMINI_API_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+# Gemini 2.5 Client
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ==============================
 # FLASK SERVER (FOR RENDER PORT)
@@ -43,14 +43,26 @@ def run_web():
 
 
 # ==============================
+# GEMINI HELPER FUNCTION
+# ==============================
+
+def generate_ai_response(prompt: str) -> str:
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+    )
+    return response.text
+
+
+# ==============================
 # TEXT CHAT
 # ==============================
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_text = update.message.text
-        response = model.generate_content(user_text)
-        await update.message.reply_text(response.text)
+        reply = generate_ai_response(user_text)
+        await update.message.reply_text(reply)
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
 
@@ -74,12 +86,12 @@ async def rewrite_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Document is empty.")
             return
 
-        response = model.generate_content(
+        rewritten = generate_ai_response(
             f"Rewrite this professionally while preserving meaning:\n\n{text}"
         )
 
         new_doc = Document()
-        new_doc.add_paragraph(response.text)
+        new_doc.add_paragraph(rewritten)
         new_doc.save(output_path)
 
         await update.message.reply_document(open(output_path, "rb"))
@@ -142,8 +154,9 @@ async def stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         Provide interpretation, risk assessment, and outlook.
         """
 
-        response = model.generate_content(prompt)
-        await update.message.reply_text(response.text)
+        analysis = generate_ai_response(prompt)
+
+        await update.message.reply_text(analysis)
 
     except Exception as e:
         await update.message.reply_text(f"Stock analysis error: {str(e)}")
@@ -159,7 +172,7 @@ def main():
     # Commands
     app.add_handler(CommandHandler("stock", stock))
 
-    # Excel filter
+    # Excel upload
     app.add_handler(
         MessageHandler(
             filters.Document.MimeType(
@@ -169,7 +182,7 @@ def main():
         )
     )
 
-    # Word filter
+    # Word upload
     app.add_handler(
         MessageHandler(
             filters.Document.MimeType(
@@ -184,7 +197,7 @@ def main():
 
     print("Bot started successfully.")
 
-    # Start Flask in background thread
+    # Start Flask (for Render port binding)
     threading.Thread(target=run_web).start()
 
     # Start Telegram polling

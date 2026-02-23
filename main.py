@@ -12,98 +12,167 @@ from telegram.ext import (
     filters,
 )
 
-# Environment variables
+# ==============================
+# ENV VARIABLES
+# ==============================
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
+    raise ValueError("Missing TELEGRAM_TOKEN or GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-# ---------------- TEXT CHAT ----------------
+
+# ==============================
+# TEXT CHAT (DEFAULT)
+# ==============================
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
-    response = model.generate_content(user_text)
-    await update.message.reply_text(response.text)
 
-# ---------------- WORD REWRITE ----------------
+    try:
+        response = model.generate_content(user_text)
+        await update.message.reply_text(response.text)
+    except Exception as e:
+        await update.message.reply_text(f"Error: {str(e)}")
+
+
+# ==============================
+# WORD REWRITE
+# ==============================
+
 async def rewrite_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.document.mime_type != \
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        await update.message.reply_text("Upload a .docx file only.")
-        return
+    try:
+        file = await update.message.document.get_file()
+        input_path = "input.docx"
+        output_path = "rewritten.docx"
 
-    file = await update.message.document.get_file()
-    input_path = "input.docx"
-    output_path = "rewritten.docx"
+        await file.download_to_drive(input_path)
 
-    await file.download_to_drive(input_path)
+        doc = Document(input_path)
+        text = "\n".join([p.text for p in doc.paragraphs])
 
-    doc = Document(input_path)
-    text = "\n".join([p.text for p in doc.paragraphs])
+        if not text.strip():
+            await update.message.reply_text("Document is empty.")
+            return
 
-    response = model.generate_content(
-        f"Rewrite this professionally:\n\n{text}"
-    )
+        response = model.generate_content(
+            f"Rewrite this professionally while preserving meaning:\n\n{text}"
+        )
 
-    new_doc = Document()
-    new_doc.add_paragraph(response.text)
-    new_doc.save(output_path)
+        new_doc = Document()
+        new_doc.add_paragraph(response.text)
+        new_doc.save(output_path)
 
-    await update.message.reply_document(open(output_path, "rb"))
+        await update.message.reply_document(open(output_path, "rb"))
 
-# ---------------- EXCEL ANALYSIS ----------------
+    except Exception as e:
+        await update.message.reply_text(f"Word processing error: {str(e)}")
+
+
+# ==============================
+# EXCEL ANALYSIS
+# ==============================
+
 async def handle_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file = await update.message.document.get_file()
-    input_path = "input.xlsx"
-    output_path = "analysis.xlsx"
+    try:
+        file = await update.message.document.get_file()
+        input_path = "input.xlsx"
+        output_path = "analysis.xlsx"
 
-    await file.download_to_drive(input_path)
+        await file.download_to_drive(input_path)
 
-    df = pd.read_excel(input_path)
+        df = pd.read_excel(input_path)
 
-    summary = df.describe()
+        summary = df.describe(include="all")
 
-    writer = pd.ExcelWriter(output_path, engine="openpyxl")
-    df.to_excel(writer, sheet_name="Original")
-    summary.to_excel(writer, sheet_name="Summary")
-    writer.close()
+        writer = pd.ExcelWriter(output_path, engine="openpyxl")
+        df.to_excel(writer, sheet_name="Original", index=False)
+        summary.to_excel(writer, sheet_name="Summary")
+        writer.close()
 
-    await update.message.reply_document(open(output_path, "rb"))
+        await update.message.reply_document(open(output_path, "rb"))
 
-# ---------------- STOCK ANALYSIS ----------------
+    except Exception as e:
+        await update.message.reply_text(f"Excel processing error: {str(e)}")
+
+
+# ==============================
+# STOCK ANALYSIS COMMAND
+# ==============================
+
 async def stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) == 0:
-        await update.message.reply_text("Use: /stock TCS.NS")
-        return
+    try:
+        if len(context.args) == 0:
+            await update.message.reply_text("Usage: /stock TCS.NS")
+            return
 
-    ticker = context.args[0]
-    data = yf.download(ticker, period="6mo")
+        ticker = context.args[0]
 
-    if data.empty:
-        await update.message.reply_text("Invalid ticker.")
-        return
+        data = yf.download(ticker, period="6mo", progress=False)
 
-    returns = data["Close"].pct_change().mean()
-    volatility = data["Close"].pct_change().std()
+        if data.empty:
+            await update.message.reply_text("Invalid or unavailable ticker.")
+            return
 
-    analysis = model.generate_content(
-        f"""
+        returns = data["Close"].pct_change().mean()
+        volatility = data["Close"].pct_change().std()
+
+        analysis_prompt = f"""
         Stock: {ticker}
-        Avg Daily Return: {returns}
+        Average Daily Return: {returns}
         Volatility: {volatility}
 
-        Give interpretation and risk summary.
+        Provide interpretation, risk assessment, and outlook.
         """
+
+        response = model.generate_content(analysis_prompt)
+
+        await update.message.reply_text(response.text)
+
+    except Exception as e:
+        await update.message.reply_text(f"Stock analysis error: {str(e)}")
+
+
+# ==============================
+# MAIN APP
+# ==============================
+
+def main():
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    # Commands
+    app.add_handler(CommandHandler("stock", stock))
+
+    # Excel upload filter
+    app.add_handler(
+        MessageHandler(
+            filters.Document.MimeType(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            handle_excel,
+        )
     )
 
-    await update.message.reply_text(analysis.text)
+    # Word upload filter
+    app.add_handler(
+        MessageHandler(
+            filters.Document.MimeType(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            rewrite_doc,
+        )
+    )
 
-# ---------------- MAIN ----------------
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    # Text messages
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-app.add_handler(CommandHandler("stock", stock))
-app.add_handler(MessageHandler(filters.Document.EXCEL, handle_excel))
-app.add_handler(MessageHandler(filters.Document.ALL, rewrite_doc))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    print("Bot started successfully.")
+    app.run_polling()
 
-app.run_polling()
+
+if __name__ == "__main__":
+    main()

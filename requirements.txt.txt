@@ -1,6 +1,0 @@
-python-telegram-bot==20.7
-google-generativeai
-python-docx
-pandas
-openpyxl
-yfinance

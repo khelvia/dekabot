@@ -1,4 +1,6 @@
 import os
+import threading
+from flask import Flask
 import google.generativeai as genai
 import pandas as pd
 import yfinance as yf
@@ -25,15 +27,28 @@ if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
 
+# ==============================
+# FLASK SERVER (FOR RENDER PORT)
+# ==============================
+
+def run_web():
+    web_app = Flask(__name__)
+
+    @web_app.route("/")
+    def home():
+        return "Telegram AI Bot is running."
+
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
+
 
 # ==============================
-# TEXT CHAT (DEFAULT)
+# TEXT CHAT
 # ==============================
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-
     try:
+        user_text = update.message.text
         response = model.generate_content(user_text)
         await update.message.reply_text(response.text)
     except Exception as e:
@@ -86,7 +101,6 @@ async def handle_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await file.download_to_drive(input_path)
 
         df = pd.read_excel(input_path)
-
         summary = df.describe(include="all")
 
         writer = pd.ExcelWriter(output_path, engine="openpyxl")
@@ -101,7 +115,7 @@ async def handle_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==============================
-# STOCK ANALYSIS COMMAND
+# STOCK ANALYSIS
 # ==============================
 
 async def stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -111,7 +125,6 @@ async def stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         ticker = context.args[0]
-
         data = yf.download(ticker, period="6mo", progress=False)
 
         if data.empty:
@@ -121,7 +134,7 @@ async def stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         returns = data["Close"].pct_change().mean()
         volatility = data["Close"].pct_change().std()
 
-        analysis_prompt = f"""
+        prompt = f"""
         Stock: {ticker}
         Average Daily Return: {returns}
         Volatility: {volatility}
@@ -129,8 +142,7 @@ async def stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         Provide interpretation, risk assessment, and outlook.
         """
 
-        response = model.generate_content(analysis_prompt)
-
+        response = model.generate_content(prompt)
         await update.message.reply_text(response.text)
 
     except Exception as e:
@@ -138,7 +150,7 @@ async def stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==============================
-# MAIN APP
+# MAIN FUNCTION
 # ==============================
 
 def main():
@@ -147,7 +159,7 @@ def main():
     # Commands
     app.add_handler(CommandHandler("stock", stock))
 
-    # Excel upload filter
+    # Excel filter
     app.add_handler(
         MessageHandler(
             filters.Document.MimeType(
@@ -157,7 +169,7 @@ def main():
         )
     )
 
-    # Word upload filter
+    # Word filter
     app.add_handler(
         MessageHandler(
             filters.Document.MimeType(
@@ -171,6 +183,11 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("Bot started successfully.")
+
+    # Start Flask in background thread
+    threading.Thread(target=run_web).start()
+
+    # Start Telegram polling
     app.run_polling()
 
 
